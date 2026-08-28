@@ -4,9 +4,12 @@
 const CONFIG_KEY_GATEWAY = 'cg_gateway_url';
 const CONFIG_KEY_CODEGUARDIAN = 'cg_app_url';
 
+// Window Configuration Support
+const windowConfig = window.CONFIG || {};
+
 // Default URLs
-let gatewayUrl = localStorage.getItem(CONFIG_KEY_GATEWAY) || 'http://localhost:8080';
-let codeGuardianUrl = localStorage.getItem(CONFIG_KEY_CODEGUARDIAN) || 'http://localhost:5173';
+let gatewayUrl = windowConfig.API_BASE_URL || localStorage.getItem(CONFIG_KEY_GATEWAY) || 'http://localhost:8080';
+let codeGuardianUrl = windowConfig.CODEGUARDIAN_URL || localStorage.getItem(CONFIG_KEY_CODEGUARDIAN) || 'http://localhost:5173';
 
 // URL params override
 const urlParams = new URLSearchParams(window.location.search);
@@ -57,104 +60,93 @@ const techAccordionIcon = document.getElementById('tech-accordion-icon');
 const successModal = document.getElementById('success-modal');
 const successOrderNum = document.getElementById('success-order-num');
 const successCorrId = document.getElementById('success-corr-id');
-const toastEl = document.getElementById('toast');
 
-// Helper: Generate unique Request ID
-function generateRequestId() {
-    return 'req-' + Math.random().toString(36).substring(2, 10);
-}
+// Toast
+const toast = document.getElementById('toast');
 
-// Toast helper
-function showToast(message) {
-    if (!toastEl) return;
-    toastEl.textContent = message;
-    toastEl.classList.remove('hidden');
-    setTimeout(() => {
-        toastEl.classList.add('hidden');
-    }, 3000);
-}
+// API Helper
+async function apiFetch(path, options = {}) {
+    const cleanBase = gatewayUrl.replace(/\/$/, '');
+    const cleanPath = path.startsWith('/') ? path : `/${path}`;
+    const url = `${cleanBase}${cleanPath}`;
 
-// API Helper with correlation header
-async function apiFetch(endpoint, options = {}) {
-    const requestId = generateRequestId();
     const headers = {
+        'Accept': 'application/json',
         'Content-Type': 'application/json',
-        'X-Request-ID': requestId,
         ...(options.headers || {})
     };
 
-    const url = `${gatewayUrl.replace(/\/$/, '')}${endpoint}`;
-    
-    // Update live correlation UI
-    const corrBadge = document.getElementById('live-corr-id');
-    if (corrBadge) {
-        corrBadge.textContent = `CorrID: ${requestId}`;
-    }
-
     try {
-        const response = await fetch(url, {
-            ...options,
-            headers
-        });
-
-        const contentType = response.headers.get('content-type');
+        const res = await fetch(url, { ...options, headers });
+        const text = await res.text();
         let data = null;
-        if (contentType && contentType.includes('application/json')) {
-            data = await response.json();
-        } else {
-            const text = await response.text();
-            try {
-                data = JSON.parse(text);
-            } catch (e) {
-                data = { raw: text };
-            }
+        try {
+            data = text ? JSON.parse(text) : {};
+        } catch {
+            data = { rawText: text };
         }
-
         return {
-            ok: response.ok,
-            status: response.status,
-            requestId: response.headers.get('X-Request-ID') || requestId,
-            data
+            ok: res.ok,
+            status: res.status,
+            requestId: res.headers.get('X-Request-ID') || data.requestId || 'req-unknown',
+            data: data
         };
     } catch (err) {
         return {
             ok: false,
             status: 0,
-            requestId,
-            error: err.message
+            requestId: 'req-network-error',
+            data: {
+                message: 'Failed to reach API Gateway: ' + err.message,
+                errorCode: 'GATEWAY_UNREACHABLE'
+            }
         };
     }
 }
 
-// Health Check
+// Toast Helper
+function showToast(msg, duration = 3000) {
+    if (!toast) return;
+    toast.textContent = msg;
+    toast.classList.remove('hidden');
+    toast.classList.add('visible');
+    setTimeout(() => {
+        toast.classList.remove('visible');
+        toast.classList.add('hidden');
+    }, duration);
+}
+
+// Check Backend Health
 async function checkHealth() {
+    if (!healthDot || !healthText) return;
     const res = await apiFetch('/health');
-    if (res.ok && res.data && res.data.status === 'UP') {
+    if (res.ok && res.data && (res.data.status === 'UP' || res.data.status === 'HEALTHY')) {
         healthDot.className = 'health-dot online';
-        healthText.textContent = 'Backend Online';
+        healthText.textContent = 'Gateway & Mesh UP';
     } else {
         healthDot.className = 'health-dot offline';
-        healthText.textContent = res.status === 0 ? 'Backend Unreachable' : `Status: ${res.status}`;
+        healthText.textContent = res.status === 0 ? 'Gateway Offline' : `Gateway Error (${res.status})`;
     }
 }
 
-// Load Products from Backend
-async function loadProducts(searchQuery = '') {
-    productsGrid.innerHTML = '<div class="loading-spinner">Loading products from backend...</div>';
-    
-    const endpoint = searchQuery ? `/products/search?q=${encodeURIComponent(searchQuery)}` : '/products';
+// Load Products
+async function loadProducts(query = '') {
+    if (!productsGrid) return;
+    productsGrid.innerHTML = `
+        <div class="product-loading-skeleton glass-panel">Loading SecOps Catalog...</div>
+    `;
+
+    const endpoint = query ? `/products/search?q=${encodeURIComponent(query)}` : '/products';
     const res = await apiFetch(endpoint);
 
     if (res.ok && Array.isArray(res.data)) {
         products = res.data;
         renderProducts(products);
     } else {
-        // Fallback default demo items if backend hasn't booted yet
         productsGrid.innerHTML = `
-            <div class="empty-state" style="grid-column: 1/-1; text-align: center; padding: 2rem;">
-                <p style="color: var(--accent-danger); margin-bottom: 0.5rem;">Failed to load products from Gateway (${gatewayUrl})</p>
-                <p style="color: var(--text-muted); font-size: 0.85rem;">Ensure gateway (:8080) and order-service (:8081) are running.</p>
-                <button class="btn btn-secondary btn-sm" style="margin-top: 1rem;" onclick="loadProducts()">Retry</button>
+            <div class="product-error glass-panel">
+                <p>Could not retrieve products from Gateway.</p>
+                <button class="btn btn-secondary" onclick="loadProducts()">Retry</button>
             </div>
         `;
     }
@@ -162,62 +154,79 @@ async function loadProducts(searchQuery = '') {
 
 // Render Products Grid
 function renderProducts(items) {
-    if (!items || items.length === 0) {
-        productsGrid.innerHTML = '<div class="empty-state" style="grid-column: 1/-1; text-align: center; padding: 2rem; color: var(--text-muted);">No products match your search.</div>';
+    if (!productsGrid) return;
+    if (items.length === 0) {
+        productsGrid.innerHTML = `
+            <div class="empty-state glass-panel">
+                <p>No SecOps products found matching criteria.</p>
+            </div>
+        `;
         return;
     }
 
-    productsGrid.innerHTML = items.map(p => `
-        <div class="product-card glass-panel">
-            <img src="${p.imageUrl || 'https://images.unsplash.com/photo-1550751827-4bd374c3f58b?w=600&auto=format&fit=crop&q=80'}" alt="${p.name}" class="product-img">
-            <div class="product-body">
-                <div>
-                    <div class="product-category">${p.category || 'Security'}</div>
-                    <h3 class="product-name">${p.name}</h3>
-                    <p class="product-desc">${p.description}</p>
-                </div>
-                <div class="product-foot">
-                    <span class="product-price">$${Number(p.price).toFixed(2)}</span>
-                    <button class="btn btn-primary btn-sm" onclick="addToCart(${p.id})">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                        Add
-                    </button>
-                </div>
+    productsGrid.innerHTML = items.map(product => `
+        <div class="product-card glass-panel" data-product-id="${product.id}">
+            <div class="product-badge">${product.category || 'Security Tool'}</div>
+            <h3 class="product-name">${escapeHtml(product.name)}</h3>
+            <p class="product-desc">${escapeHtml(product.description || '')}</p>
+            <div class="product-footer">
+                <span class="product-price">$${Number(product.price).toFixed(2)}</span>
+                <button class="btn btn-primary btn-sm" onclick="addToCart(${product.id})">
+                    Add to Cart
+                </button>
             </div>
         </div>
     `).join('');
 }
 
-// Load Orders History from Backend
-async function loadOrders() {
-    ordersTbody.innerHTML = '<tr><td colspan="6" class="text-center">Loading orders from backend...</td></tr>';
-    const res = await apiFetch('/orders');
-    
-    if (res.ok && Array.isArray(res.data)) {
-        if (res.data.length === 0) {
-            ordersTbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No orders in database yet.</td></tr>';
-            return;
-        }
+function escapeHtml(text) {
+    if (!text) return '';
+    return String(text).replace(/[&<>"']/g, function (m) {
+        return {
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#039;'
+        }[m];
+    });
+}
 
-        ordersTbody.innerHTML = res.data.map(o => `
-            <tr>
-                <td><strong>${o.orderNumber || 'ORD-' + o.id}</strong></td>
-                <td>${o.userId}</td>
-                <td><code>${o.merchantCode || 'N/A'}</code></td>
-                <td>$${Number(o.totalAmount || 0).toFixed(2)}</td>
-                <td>
-                    <span class="badge ${o.status === 'CONFIRMED' ? 'badge-success' : 'badge-danger'}">
-                        ${o.status}
-                    </span>
-                </td>
-                <td style="color: var(--text-muted); font-size: 0.8rem;">
-                    ${o.createdAt ? new Date(o.createdAt).toLocaleTimeString() : 'Recent'}
-                </td>
-            </tr>
-        `).join('');
+// Load Orders
+async function loadOrders() {
+    if (!ordersTbody) return;
+    const res = await apiFetch('/orders');
+    if (res.ok && Array.isArray(res.data)) {
+        renderOrders(res.data);
     } else {
-        ordersTbody.innerHTML = '<tr><td colspan="6" class="text-center text-danger">Failed to fetch orders from Gateway</td></tr>';
+        ordersTbody.innerHTML = `
+            <tr><td colspan="5" class="text-center text-muted">No orders synced yet</td></tr>
+        `;
     }
+}
+
+function renderOrders(orders) {
+    if (!ordersTbody) return;
+    if (orders.length === 0) {
+        ordersTbody.innerHTML = `
+            <tr><td colspan="5" class="text-center text-muted">No orders found in database</td></tr>
+        `;
+        return;
+    }
+
+    ordersTbody.innerHTML = orders.map(order => {
+        const isSuccess = order.status === 'CONFIRMED' || order.status === 'SUCCESS';
+        const badgeClass = isSuccess ? 'badge-success' : 'badge-danger';
+        return `
+            <tr>
+                <td><code>${escapeHtml(order.orderNumber || ('ORD-' + order.id))}</code></td>
+                <td>User #${order.userId}</td>
+                <td>$${Number(order.totalAmount || 0).toFixed(2)}</td>
+                <td><span class="badge ${badgeClass}">${escapeHtml(order.status)}</span></td>
+                <td><span class="text-muted">${order.merchantCode || 'MCH-STANDARD'}</span></td>
+            </tr>
+        `;
+    }).join('');
 }
 
 // Cart Operations
@@ -233,38 +242,46 @@ function addToCart(productId) {
     }
 
     updateCartUI();
-    showToast(`Added "${product.name}" to cart`);
+    showToast(`Added ${product.name} to cart`);
 }
 
-function removeFromCart(productId) {
-    cart = cart.filter(item => item.id !== productId);
+function updateCartQuantity(productId, delta) {
+    const item = cart.find(i => i.id === productId);
+    if (!item) return;
+
+    item.quantity += delta;
+    if (item.quantity <= 0) {
+        cart = cart.filter(i => i.id !== productId);
+    }
     updateCartUI();
 }
 
 function updateCartUI() {
     const totalCount = cart.reduce((sum, item) => sum + item.quantity, 0);
+    const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+
     cartCountBadge.textContent = totalCount;
 
     if (cart.length === 0) {
-        cartItemsContainer.innerHTML = '<div class="empty-cart">Your cart is empty. Add products from the catalog above!</div>';
+        cartItemsContainer.innerHTML = `
+            <div class="empty-cart-msg">Your SecOps cart is currently empty.</div>
+        `;
         cartSubtotal.textContent = '$0.00';
         cartTotal.textContent = '$0.00';
         return;
     }
 
-    let subtotal = 0;
     cartItemsContainer.innerHTML = cart.map(item => {
-        const itemTotal = item.price * item.quantity;
-        subtotal += itemTotal;
         return `
-            <div class="cart-item">
-                <div>
-                    <strong style="font-size: 0.9rem;">${item.name}</strong>
-                    <div style="color: var(--text-muted); font-size: 0.8rem;">$${item.price.toFixed(2)} × ${item.quantity}</div>
+            <div class="cart-item-row">
+                <div class="cart-item-info">
+                    <div class="cart-item-title">${escapeHtml(item.name)}</div>
+                    <div class="cart-item-price">$${Number(item.price).toFixed(2)} each</div>
                 </div>
-                <div style="display: flex; align-items: center; gap: 0.5rem;">
-                    <strong style="color: #fff;">$${itemTotal.toFixed(2)}</strong>
-                    <button class="icon-btn" style="width: 28px; height: 28px; font-size: 0.75rem;" onclick="removeFromCart(${item.id})">&times;</button>
+                <div class="cart-qty-ctrl">
+                    <button class="qty-btn" onclick="updateCartQuantity(${item.id}, -1)">-</button>
+                    <span class="qty-num">${item.quantity}</span>
+                    <button class="qty-btn" onclick="updateCartQuantity(${item.id}, 1)">+</button>
                 </div>
             </div>
         `;
@@ -340,7 +357,7 @@ async function executeCheckout(payload) {
         // Success 200 OK
         openSuccessModal(payload.orderId, res.requestId);
     } else {
-        // Failure (e.g. 500 with NULL_OBJECT_ACCESS)
+        // Failure (e.g. 500 with NULL_OBJECT_ACCESS or controlled business error)
         openFailureModal(res, payload);
     }
 }
@@ -377,8 +394,8 @@ function openFailureModal(res, requestPayload) {
     document.getElementById('tech-code').textContent = lastFailurePayload.errorCode;
     document.getElementById('tech-service').textContent = lastFailurePayload.service;
     document.getElementById('tech-exception').textContent = lastFailurePayload.exception;
-    document.getElementById('tech-file').textContent = lastFailurePayload.source.file || 'PaymentService.java';
-    document.getElementById('tech-line').textContent = lastFailurePayload.source.line || '24';
+    document.getElementById('tech-file').textContent = (lastFailurePayload.source && lastFailurePayload.source.file) ? lastFailurePayload.source.file : 'PaymentService.java';
+    document.getElementById('tech-line').textContent = (lastFailurePayload.source && lastFailurePayload.source.line) ? lastFailurePayload.source.line : '24';
 
     // Hide technical accordion by default
     techDetailsContent.classList.add('hidden');
@@ -402,14 +419,14 @@ function copyFailureDetails() {
 function openCodeGuardianInvestigation() {
     if (!lastFailurePayload) return;
     
-    // Construct incident link with query parameters
+    // Construct incident link with query parameters targeting RaghulVarathan/JavaAPICheck
     const params = new URLSearchParams({
-        repo: 'https://github.com/sunilkumarb2007/JavaAPICheck',
+        repo: 'https://github.com/RaghulVarathan/JavaAPICheck',
         requestId: lastFailurePayload.requestId,
         errorCode: lastFailurePayload.errorCode,
         service: lastFailurePayload.service,
-        file: lastFailurePayload.source.file,
-        line: lastFailurePayload.source.line
+        file: (lastFailurePayload.source && lastFailurePayload.source.file) ? lastFailurePayload.source.file : 'PaymentService.java',
+        line: (lastFailurePayload.source && lastFailurePayload.source.line) ? lastFailurePayload.source.line : '24'
     });
 
     const targetUrl = `${codeGuardianUrl.replace(/\/$/, '')}?${params.toString()}`;
@@ -455,8 +472,8 @@ function saveConfig() {
 }
 
 function resetConfig() {
-    gatewayUrl = 'http://localhost:8080';
-    codeGuardianUrl = 'http://localhost:5173';
+    gatewayUrl = windowConfig.API_BASE_URL || 'http://localhost:8080';
+    codeGuardianUrl = windowConfig.CODEGUARDIAN_URL || 'http://localhost:5173';
     localStorage.removeItem(CONFIG_KEY_GATEWAY);
     localStorage.removeItem(CONFIG_KEY_CODEGUARDIAN);
     gatewayUrlInput.value = gatewayUrl;
