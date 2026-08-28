@@ -23,14 +23,15 @@ class PaymentServiceUnitTest {
     }
 
     @Test
-    void missingMerchantThrowsNullPointerException() {
+    void missingMerchantThrowsIllegalArgumentException() {
         when(merchantRepository.findByMerchantCode("MCH-UNKNOWN")).thenReturn(null);
 
         CheckoutRequest request = new CheckoutRequest(101L, 5001L, 499.0, "MCH-UNKNOWN");
 
-        // The baseline unpatched code throws NullPointerException
+        // After the repair patch, null merchant is safely caught and throws IllegalArgumentException
         assertThatThrownBy(() -> paymentService.processPayment(request))
-                .isInstanceOf(NullPointerException.class);
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Merchant not found");
     }
 
     @Test

@@ -43,15 +43,15 @@ class PaymentServiceApplicationTests {
     }
 
     @Test
-    void deterministicBugReturnsInternalServerError() throws Exception {
+    void missingMerchantReturnsControlledNotFound() throws Exception {
         mockMvc.perform(post("/payments/charge")
                         .contentType(MediaType.APPLICATION_JSON)
                         .header("X-Request-ID", "req-test-bug-5001")
                         .content("""
                                 {"userId":101,"orderId":5001,"amount":499.0,"merchantCode":"MCH-UNKNOWN"}
                                 """))
-                .andExpect(status().isInternalServerError())
-                .andExpect(jsonPath("$.errorCode").value("NULL_OBJECT_ACCESS"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("MERCHANT_NOT_FOUND"))
                 .andExpect(jsonPath("$.service").value("payment-service"))
                 .andExpect(jsonPath("$.source.file").value("PaymentService.java"));
     }
