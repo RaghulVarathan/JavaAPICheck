@@ -98,6 +98,35 @@ public class PaymentController {
                 .body(errorResponse);
     }
 
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ErrorResponse> handleIllegalArgument(IllegalArgumentException exception,
+                                                               HttpServletRequest request) {
+        String requestId = request.getHeader("X-Request-ID");
+        String effectiveRequestId = (requestId != null && !requestId.isBlank()) ? requestId : "req-missing";
+
+        logWriter.log("payment-service", "merchant_not_found", effectiveRequestId, Map.of(
+                "status_code", HttpStatus.NOT_FOUND.value(),
+                "error_code", "MERCHANT_NOT_FOUND",
+                "message", exception.getMessage(),
+                "source_file", "PaymentService.java",
+                "source_line", 21
+        ));
+
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .header("X-Request-ID", effectiveRequestId)
+                .body(ErrorResponse.of(
+                        effectiveRequestId,
+                        HttpStatus.NOT_FOUND.value(),
+                        "MERCHANT_NOT_FOUND",
+                        exception.getMessage(),
+                        "payment-service",
+                        "/payments/charge",
+                        "IllegalArgumentException",
+                        "PaymentService.java",
+                        21
+                ));
+    }
+
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<ErrorResponse> handleIllegalState(IllegalStateException exception,
                                                             HttpServletRequest request) {
